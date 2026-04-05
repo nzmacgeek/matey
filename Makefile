@@ -203,7 +203,7 @@ help:
 	@echo "  make musl         clone musl-blueyos and build for i386 (into MUSL_PREFIX)"
 	@echo "  make static       same as above, explicit"
 	@echo "  make dynamic      build dynamically linked i386 ELF"
-	@echo "  make package      build matey-.dpk for dimsim (requires dpkbuild)"
+	@echo "  make package      build matey-<version>-i386.dpk for dimsim (requires dpkbuild)"
 	@echo "  make clean        remove build artefacts"
 	@echo ""
 	@echo "Variables:"

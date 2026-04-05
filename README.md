@@ -141,7 +141,7 @@ make package
 ```
 
 This builds the static i386 ELF, stages it under `pkg/payload/sbin/matey`, and
-invokes `dpkbuild build pkg/` to produce `matey-0.1.0-i386.dpk`.
+invokes `dpkbuild build pkg/` to produce `matey-<version>-i386.dpk`.
 
 ### Installing into an offline sysroot
 
@@ -150,7 +150,7 @@ invokes `dpkbuild build pkg/` to produce `matey-0.1.0-i386.dpk`.
 mount -o loop blueyos.img /mnt/blueyos
 
 # Install matey (no network needed — pass the local .dpk directly)
-dimsim --root /mnt/blueyos install ./matey-0.1.0-i386.dpk
+dimsim --root /mnt/blueyos install ./matey-<version>-i386.dpk
 
 # Unmount and boot
 umount /mnt/blueyos
