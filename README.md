@@ -26,8 +26,8 @@ for BlueyOS. It manages the terminal login sequence:
 5. Execs `/sbin/login` (falling back to `/bin/sh`)
 
 The binary is built as an **i386 ELF** and linked **statically against
-[musl libc](https://musl.libc.org/)** by default, with support for a
-dynamic build as well.
+[musl-blueyos](https://github.com/nzmacgeek/musl-blueyos)** by default,
+with support for a dynamic build as well.
 
 ---
 
@@ -35,37 +35,44 @@ dynamic build as well.
 
 - `gcc` with `-m32` support (`gcc-multilib` on Debian/Ubuntu)
 - `binutils` (`ld`, `ar`)
-- A musl sysroot built for i386 (see _Building musl_ below)
+- `git`
+- A musl-blueyos sysroot for i386 — see _Building musl-blueyos_ below
 
 ```bash
 # Debian/Ubuntu
-sudo apt-get install -y gcc-multilib binutils
+sudo apt-get install -y gcc-multilib binutils git
 ```
 
 ---
 
 ## Building
 
-### 1. Build musl for i386
+### 1. musl-blueyos sysroot
 
-matey requires a musl sysroot compiled for i386. The helper script
-`tools/build-musl.sh` downloads musl and builds it:
+matey is built against [musl-blueyos](https://github.com/nzmacgeek/musl-blueyos),
+a BlueyOS-flavoured fork of musl libc.
+
+**On a BlueyOS build host** the sysroot is already installed at
+`/opt/blueyos-sysroot` — the Makefile detects this automatically and no
+extra steps are needed.
+
+**On a fresh host** run the helper script to clone and build it:
 
 ```bash
-make musl                        # installs into build/musl/
+make musl                        # clones musl-blueyos, installs into build/musl/
 # or with a custom prefix:
-make musl MUSL_PREFIX=/opt/musl-i386
+make musl MUSL_PREFIX=/opt/blueyos-sysroot
 ```
 
 ### 2. Build matey
 
 ```bash
-make                             # static i386 ELF (default)
-make static                      # same, explicit
-make dynamic                     # dynamically linked i386 ELF
-make DEBUG=1                     # debug build (-g -O0)
-make MUSL_PREFIX=/opt/musl-i386  # custom musl sysroot
-make clean                       # remove build/
+make                                        # static i386 ELF (default)
+make static                                 # same, explicit
+make dynamic                                # dynamically linked i386 ELF
+make DEBUG=1                                # debug build (-g -O0)
+make MUSL_PREFIX=/opt/blueyos-sysroot       # explicit sysroot path
+make clean                                  # remove build/
 ```
 
 Output files:
