@@ -1,0 +1,287 @@
+/*
+ * matey - getty implementation for BlueyOS
+ * "G'day! Come on in!" - Bandit Heeler
+ *
+ * matey manages the terminal login sequence for BlueyOS. It opens the TTY,
+ * displays the login banner, reads the username, and execs the login program.
+ *
+ * Built as i386 ELF, statically linked against musl libc by default.
+ *
+ * Usage:
+ *   matey [tty-device]
+ *
+ * Examples:
+ *   matey             - use inherited stdin/stdout (console)
+ *   matey /dev/tty1   - open and use /dev/tty1
+ *
+ * Bluey and all related characters are trademarks of Ludo Studio Pty Ltd,
+ * licensed by BBC Studios. This is an unofficial fan/research project with
+ * no affiliation to Ludo Studio or the BBC.
+ *
+ * ⚠️  VIBE CODED RESEARCH PROJECT - NOT FOR PRODUCTION USE ⚠️
+ */
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
+
+#define MATEY_VERSION   "0.1.0"
+#define LOGIN_PROGRAM   "/sbin/login"
+#define SHELL_FALLBACK  "/bin/sh"
+#define MAX_USERNAME    64
+#define MAX_HOSTNAME    256
+#define ISSUE_FILE      "/etc/issue"
+/* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
+#define WRITE_EAGAIN_DELAY_US   1000
+
+/* BlueyOS ASCII banner — "Where Every Boot is a New Adventure!" */
+static const char BANNER[] =
+    "\r\n"
+    "  ____  _                    ___  ____  \r\n"
+    " | __ )| |_   _  ___ _   _ / _ \\/ ___| \r\n"
+    " |  _ \\| | | | |/ _ \\ | | | | | \\___ \\ \r\n"
+    " | |_) | | |_| |  __/ |_| | |_| |___) |\r\n"
+    " |____/|_|\\__,_|\\___|\\__, |\\___/|____/ \r\n"
+    "                     |___/              \r\n"
+    " Where Every Boot is a New Adventure!  \r\n"
+    " matey v" MATEY_VERSION " | Bandit's Login Doorbell\r\n"
+    "\r\n";
+
+/* -------------------------------------------------------------------------
+ * Terminal helpers
+ * ---------------------------------------------------------------------- */
+
+/* Save/restore terminal state so raw reads work even if termios is present. */
+static struct termios saved_termios;
+static int termios_saved = 0;
+
+static void setup_terminal(void)
+{
+    struct termios t;
+
+    if (tcgetattr(STDIN_FILENO, &t) != 0)
+        return; /* TTY may not support termios (BlueyOS VGA console) */
+
+    saved_termios  = t;
+    termios_saved  = 1;
+
+    /* Canonical mode with echo — suitable for reading a login name. */
+    t.c_lflag |= (ICANON | ECHO | ECHOE | ECHOK);
+    t.c_lflag &= ~(unsigned)ECHONL;
+    t.c_iflag |= (ICRNL | IXON);
+    t.c_oflag |= (OPOST | ONLCR);
+    t.c_cc[VMIN]  = 1;
+    t.c_cc[VTIME] = 0;
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+}
+
+static void restore_terminal(void)
+{
+    if (termios_saved)
+        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+}
+
+/* -------------------------------------------------------------------------
+ * I/O helpers
+ * ---------------------------------------------------------------------- */
+
+static void write_str(const char *s)
+{
+    size_t len = strlen(s);
+    while (len > 0) {
+        ssize_t n = write(STDOUT_FILENO, s, len);
+        if (n > 0) {
+            s   += (size_t)n;
+            len -= (size_t)n;
+            continue;
+        }
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(WRITE_EAGAIN_DELAY_US);
+                continue;
+            }
+        }
+        break;
+    }
+}
+
+/*
+ * Read one line from stdin into buf (up to maxlen-1 chars).
+ * Returns the number of characters stored (excluding the NUL terminator).
+ * Handles backspace locally when the terminal does not (raw/no-echo path).
+ */
+static int read_line(char *buf, int maxlen)
+{
+    int i = 0;
+
+    while (i < maxlen - 1) {
+        unsigned char c;
+        ssize_t n = read(STDIN_FILENO, &c, 1);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (n == 0)
+            break;
+        if (c == '\n' || c == '\r')
+            break;
+        /* Backspace / DEL — erase last character if terminal doesn't */
+        if (c == '\b' || c == 127) {
+            if (i > 0)
+                i--;
+            continue;
+        }
+        /* Ignore other control characters */
+        if (c < 0x20)
+            continue;
+        buf[i++] = (char)c;
+    }
+    buf[i] = '\0';
+    return i;
+}
+
+/* -------------------------------------------------------------------------
+ * Optional /etc/issue display
+ * ---------------------------------------------------------------------- */
+
+static void print_issue(void)
+{
+    char buf[256];
+    ssize_t n;
+    int fd = open(ISSUE_FILE, O_RDONLY);
+    if (fd < 0)
+        return;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+        ssize_t written = write(STDOUT_FILENO, buf, (size_t)n);
+        (void)written;
+    }
+    close(fd);
+}
+
+/* -------------------------------------------------------------------------
+ * main
+ * ---------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    char hostname[MAX_HOSTNAME];
+    char username[MAX_USERNAME];
+    char prompt[MAX_HOSTNAME + 32];
+    const char *ttydev = (argc > 1) ? argv[1] : NULL;
+    int tty_fd = -1;
+
+    /* Open the TTY device if one was specified on the command line. */
+    if (ttydev != NULL) {
+        tty_fd = open(ttydev, O_RDWR | O_NOCTTY);
+        if (tty_fd < 0) {
+            /* Non-fatal: fall back to the inherited stdio fds. */
+            const char *err = strerror(errno);
+            write_str("matey: cannot open ");
+            write_str(ttydev);
+            write_str(": ");
+            write_str(err);
+            write_str("\r\n");
+        } else {
+            /* Become a session leader before claiming a controlling TTY. */
+            if (setsid() < 0) {
+                const char *err = strerror(errno);
+                write_str("matey: setsid failed for ");
+                write_str(ttydev);
+                write_str(": ");
+                write_str(err);
+                write_str("\r\n");
+                close(tty_fd);
+            } else if (ioctl(tty_fd, TIOCSCTTY, 0) < 0) {
+                const char *err = strerror(errno);
+                write_str("matey: cannot set controlling tty ");
+                write_str(ttydev);
+                write_str(": ");
+                write_str(err);
+                write_str("\r\n");
+                close(tty_fd);
+            } else {
+                /* Make this TTY our controlling terminal and redirect stdio. */
+                dup2(tty_fd, STDIN_FILENO);
+                dup2(tty_fd, STDOUT_FILENO);
+                dup2(tty_fd, STDERR_FILENO);
+                if (tty_fd > STDERR_FILENO)
+                    close(tty_fd);
+            }
+        }
+    }
+
+    /* Configure the terminal for login-name input. */
+    setup_terminal();
+
+    /* Determine hostname for the login prompt. */
+    if (gethostname(hostname, sizeof(hostname)) != 0) {
+        strncpy(hostname, "blueyos", sizeof(hostname) - 1);
+        hostname[sizeof(hostname) - 1] = '\0';
+    }
+
+    /* Build the prompt string once. */
+    snprintf(prompt, sizeof(prompt), "%s login: ", hostname);
+
+    /* -----------------------------------------------------------------------
+     * Main login loop — display banner, read username, exec login.
+     * On exec failure we loop so the console remains usable.
+     * -------------------------------------------------------------------- */
+    for (;;) {
+        write_str(BANNER);
+        print_issue();
+        write_str(prompt);
+
+        int len;
+        read_line(username, sizeof(username));
+        write_str("\r\n");
+
+        /* Trim leading whitespace. */
+        char *name = username;
+        while (*name == ' ' || *name == '\t')
+            name++;
+
+        /* Calculate trimmed length. */
+        len = (int)strlen(name);
+        if (len == 0)
+            continue;
+
+        /* Trim trailing whitespace. */
+        while (len > 0 && (name[len - 1] == ' ' || name[len - 1] == '\t'))
+            name[--len] = '\0';
+
+        if (len == 0)
+            continue;
+
+        /* Restore terminal before handing over to login / shell. */
+        restore_terminal();
+
+        /* Exec the login program, passing the username. */
+        execl(LOGIN_PROGRAM, "login", "-p", "--", name, (char *)NULL);
+
+        /* login exec failed — try a shell as last resort. */
+        write_str("matey: exec " LOGIN_PROGRAM " failed: ");
+        write_str(strerror(errno));
+        write_str("\r\nmatey: falling back to " SHELL_FALLBACK "\r\n");
+
+        execl(SHELL_FALLBACK, "sh", (char *)NULL);
+
+        /* Shell exec also failed — pause briefly, re-setup terminal and loop. */
+        write_str("matey: exec " SHELL_FALLBACK " failed: ");
+        write_str(strerror(errno));
+        write_str("\r\n");
+        sleep(1);
+        setup_terminal();
+    }
+
+    /* unreachable */
+    return 0;
+}
