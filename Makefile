@@ -92,7 +92,7 @@ STATIC_LDFLAGS := $(BASE_LDFLAGS) -static -no-pie -L$(MUSL_LIB)
 # Dynamic build flags
 # ---------------------------------------------------------------------------
 DYNAMIC_CFLAGS  := $(BASE_CFLAGS) -fPIC -isystem $(MUSL_INCLUDE)
-DYNAMIC_LDFLAGS := $(BASE_LDFLAGS) -L$(MUSL_LIB) -Wl,-rpath,$(MUSL_LIB)
+DYNAMIC_LDFLAGS := $(BASE_LDFLAGS) -no-pie -L$(MUSL_LIB)
 
 # ---------------------------------------------------------------------------
 # Phony targets

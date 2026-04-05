@@ -36,6 +36,8 @@
 #define MAX_USERNAME    64
 #define MAX_HOSTNAME    256
 #define ISSUE_FILE      "/etc/issue"
+/* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
+#define WRITE_EAGAIN_DELAY_US   1000
 
 /* BlueyOS ASCII banner — "Where Every Boot is a New Adventure!" */
 static const char BANNER[] =
@@ -94,10 +96,20 @@ static void write_str(const char *s)
     size_t len = strlen(s);
     while (len > 0) {
         ssize_t n = write(STDOUT_FILENO, s, len);
-        if (n <= 0)
-            break;
-        s   += (size_t)n;
-        len -= (size_t)n;
+        if (n > 0) {
+            s   += (size_t)n;
+            len -= (size_t)n;
+            continue;
+        }
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(WRITE_EAGAIN_DELAY_US);
+                continue;
+            }
+        }
+        break;
     }
 }
 
@@ -113,7 +125,12 @@ static int read_line(char *buf, int maxlen)
     while (i < maxlen - 1) {
         unsigned char c;
         ssize_t n = read(STDIN_FILENO, &c, 1);
-        if (n <= 0)
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (n == 0)
             break;
         if (c == '\n' || c == '\r')
             break;
@@ -174,13 +191,31 @@ int main(int argc, char *argv[])
             write_str(err);
             write_str("\r\n");
         } else {
-            /* Make this TTY our controlling terminal and redirect stdio. */
-            (void)ioctl(tty_fd, TIOCSCTTY, 0);
-            dup2(tty_fd, STDIN_FILENO);
-            dup2(tty_fd, STDOUT_FILENO);
-            dup2(tty_fd, STDERR_FILENO);
-            if (tty_fd > STDERR_FILENO)
+            /* Become a session leader before claiming a controlling TTY. */
+            if (setsid() < 0) {
+                const char *err = strerror(errno);
+                write_str("matey: setsid failed for ");
+                write_str(ttydev);
+                write_str(": ");
+                write_str(err);
+                write_str("\r\n");
                 close(tty_fd);
+            } else if (ioctl(tty_fd, TIOCSCTTY, 0) < 0) {
+                const char *err = strerror(errno);
+                write_str("matey: cannot set controlling tty ");
+                write_str(ttydev);
+                write_str(": ");
+                write_str(err);
+                write_str("\r\n");
+                close(tty_fd);
+            } else {
+                /* Make this TTY our controlling terminal and redirect stdio. */
+                dup2(tty_fd, STDIN_FILENO);
+                dup2(tty_fd, STDOUT_FILENO);
+                dup2(tty_fd, STDERR_FILENO);
+                if (tty_fd > STDERR_FILENO)
+                    close(tty_fd);
+            }
         }
     }
 
@@ -239,10 +274,11 @@ int main(int argc, char *argv[])
 
         execl(SHELL_FALLBACK, "sh", (char *)NULL);
 
-        /* Shell exec also failed — re-setup terminal and loop. */
+        /* Shell exec also failed — pause briefly, re-setup terminal and loop. */
         write_str("matey: exec " SHELL_FALLBACK " failed: ");
         write_str(strerror(errno));
         write_str("\r\n");
+        sleep(1);
         setup_terminal();
     }
 
