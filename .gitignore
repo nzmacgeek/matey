@@ -1,6 +1,10 @@
 # Build artefacts
 build/
 
+# dimsim package artefacts
+pkg/payload/sbin/matey
+*.dpk
+
 # Editor / IDE artefacts
 .DS_Store
 *.swp

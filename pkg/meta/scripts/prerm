@@ -1,0 +1,13 @@
+#!/bin/bash
+# Pre-removal script for matey
+# Called before files are removed.
+set -e
+
+# Stop all matey getty instances if claw is running.
+if command -v clawctl >/dev/null 2>&1; then
+    clawctl stop matey@tty1 2>/dev/null || true
+    clawctl stop matey@tty2 2>/dev/null || true
+    clawctl stop matey@tty3 2>/dev/null || true
+fi
+
+exit 0

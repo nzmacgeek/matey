@@ -1,0 +1,10 @@
+#!/bin/bash
+# Post-installation script for matey
+# Called after files are placed.
+set -e
+
+echo "matey installed — Bandit's Login Doorbell is ready."
+echo "Claw service units are in /etc/claw/services.d/ and /etc/claw/targets.d/."
+echo "matey will start on /dev/tty1, /dev/tty2, and /dev/tty3 at claw-multiuser.target."
+
+exit 0

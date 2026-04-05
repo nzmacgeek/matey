@@ -1,0 +1,7 @@
+#!/bin/bash
+# Post-removal script for matey
+# Called after files are removed.
+set -e
+
+echo "matey removed — Bandit has left the building."
+exit 0

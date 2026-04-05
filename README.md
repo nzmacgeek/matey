@@ -113,6 +113,55 @@ full BlueyOS build system and disk image creation.
 
 ---
 
+## Packaging (dimsim)
+
+matey ships as a [dimsim](https://github.com/nzmacgeek/dimsim) `.dpk` package
+for installation into a BlueyOS sysroot — online or offline.
+
+### Package contents
+
+| Installed path | Description |
+|---|---|
+| `/sbin/matey` | The static i386 ELF binary |
+| `/etc/claw/services.d/matey@tty1.yml` | Claw service — getty on `/dev/tty1` |
+| `/etc/claw/services.d/matey@tty2.yml` | Claw service — getty on `/dev/tty2` |
+| `/etc/claw/services.d/matey@tty3.yml` | Claw service — getty on `/dev/tty3` |
+| `/etc/claw/targets.d/claw-multiuser.target.yml` | Multiuser target wanting all three gettys |
+
+The three getty services start after `claw-basic.target` and are `wanted` by
+`claw-multiuser.target`, so they activate automatically as the system reaches
+the multi-user state on every boot.
+
+### Building the package
+
+Requires `dpkbuild` from [dimsim](https://github.com/nzmacgeek/dimsim) on your `PATH`.
+
+```bash
+make package
+```
+
+This builds the static i386 ELF, stages it under `pkg/payload/sbin/matey`, and
+invokes `dpkbuild build pkg/` to produce `matey-0.1.0-i386.dpk`.
+
+### Installing into an offline sysroot
+
+```bash
+# Mount the target rootfs
+mount -o loop blueyos.img /mnt/blueyos
+
+# Install matey (no network needed — pass the local .dpk directly)
+dimsim --root /mnt/blueyos install ./matey-0.1.0-i386.dpk
+
+# Unmount and boot
+umount /mnt/blueyos
+```
+
+On first boot, claw loads the service and target files placed under
+`/etc/claw/` and activates the three matey getty instances as part of
+`claw-multiuser.target`.
+
+---
+
 ## Character mapping
 
 | Component | Character   | Quote                              |

@@ -1,0 +1,8 @@
+# /etc/claw/targets.d/claw-multiuser.target.yml
+# Multi-User System target — login services active
+# "The Magic Claw welcomes all challengers. Log in if you dare!"
+name: claw-multiuser.target
+description: Multi-User System — console login active
+requires: claw-basic.target
+wants: matey@tty1 matey@tty2 matey@tty3
+after: claw-basic.target

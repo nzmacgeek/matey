@@ -97,7 +97,7 @@ DYNAMIC_LDFLAGS := $(BASE_LDFLAGS) -no-pie -L$(MUSL_LIB)
 # ---------------------------------------------------------------------------
 # Phony targets
 # ---------------------------------------------------------------------------
-.PHONY: all static dynamic musl musl-check clean help
+.PHONY: all static dynamic musl musl-check package clean help
 
 .DEFAULT_GOAL := all
 
@@ -161,6 +161,28 @@ $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
 # ---------------------------------------------------------------------------
+# package — build the matey .dpk for installation into a BlueyOS sysroot
+# ---------------------------------------------------------------------------
+PKG_DIR   := pkg
+PKG_BIN   := $(PKG_DIR)/payload/sbin/matey
+
+package: static
+	@command -v dpkbuild >/dev/null 2>&1 || { \
+		echo ""; \
+		echo "  [PKG]  dpkbuild not found — install the dimsim tools first."; \
+		echo "         See: https://github.com/nzmacgeek/dimsim"; \
+		echo ""; \
+		exit 1; \
+	}
+	@mkdir -p $(PKG_DIR)/payload/sbin
+	@cp $(TARGET) $(PKG_BIN)
+	@chmod 0755 $(PKG_BIN)
+	dpkbuild build $(PKG_DIR)/
+	@echo ""
+	@echo "  [PKG]  matey package built."
+	@echo ""
+
+# ---------------------------------------------------------------------------
 # clean
 # ---------------------------------------------------------------------------
 clean:
@@ -168,6 +190,7 @@ clean:
 		echo "  [CLEAN] Refusing to remove unsafe BUILD_DIR='$(BUILD_DIR)'"; exit 1; \
 	fi
 	rm -rf -- "$(BUILD_DIR)"
+	rm -f -- "$(PKG_BIN)" matey-*.dpk
 	@echo "  [CLEAN] Build artefacts removed from $(BUILD_DIR)."
 
 # ---------------------------------------------------------------------------
@@ -180,6 +203,7 @@ help:
 	@echo "  make musl         clone musl-blueyos and build for i386 (into MUSL_PREFIX)"
 	@echo "  make static       same as above, explicit"
 	@echo "  make dynamic      build dynamically linked i386 ELF"
+	@echo "  make package      build matey-.dpk for dimsim (requires dpkbuild)"
 	@echo "  make clean        remove build artefacts"
 	@echo ""
 	@echo "Variables:"
