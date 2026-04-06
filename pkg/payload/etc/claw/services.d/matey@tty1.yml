@@ -1,0 +1,10 @@
+# /etc/claw/services.d/matey@tty1.yml
+# Bandit's Login Doorbell — getty on /dev/tty1
+name: matey@tty1
+description: "G'day! Bandit's Login Doorbell on /dev/tty1"
+type: simple
+start_cmd: /sbin/matey /dev/tty1
+user: root
+restart: always
+restart_delay: 1
+after: claw-basic.target

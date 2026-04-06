@@ -1,0 +1,7 @@
+#!/bin/bash
+# Pre-installation script for matey
+# Called before files are placed.
+set -e
+
+# Nothing to do before placement — matey is a standalone static binary.
+exit 0

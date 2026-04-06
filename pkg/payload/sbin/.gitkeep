@@ -1,0 +1,2 @@
+# payload/sbin/matey is a compiled i386 ELF binary — not tracked in git.
+# Run `make package` to build the binary and produce the .dpk archive.

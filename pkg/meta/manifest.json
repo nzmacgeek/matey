@@ -1,0 +1,14 @@
+{
+  "name": "matey",
+  "version": "0.1.0",
+  "arch": "i386",
+  "description": "getty implementation for BlueyOS — Bandit's Login Doorbell",
+  "depends": [],
+  "recommends": [],
+  "conflicts": [],
+  "provides": ["getty"],
+  "maintainer": "BlueyOS Maintainers <maintainers@blueyos.example>",
+  "homepage": "https://github.com/nzmacgeek/matey",
+  "files": [],
+  "scripts": {}
+}
