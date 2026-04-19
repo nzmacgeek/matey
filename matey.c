@@ -310,7 +310,6 @@ int main(int argc, char *argv[])
 
                 secure_zero(password, sizeof(password));
                 write_str("Login incorrect.\r\n");
-                sleep(1);
             }
             secure_zero(password, sizeof(password));
 
@@ -326,7 +325,6 @@ int main(int argc, char *argv[])
             execl(ROOT_SHELL, ROOT_SHELL, (char *)NULL);
             execl(SHELL_FALLBACK, SHELL_FALLBACK, (char *)NULL);
             write_str("matey: exec shell failed\r\n");
-            sleep(1);
             setup_terminal();
             continue;
         }
@@ -348,7 +346,6 @@ int main(int argc, char *argv[])
         write_str("matey: exec " SHELL_FALLBACK " failed: ");
         write_str(strerror(errno));
         write_str("\r\n");
-        sleep(1);
         setup_terminal();
     }
 
