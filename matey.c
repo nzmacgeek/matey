@@ -32,9 +32,13 @@
 
 #define MATEY_VERSION   "0.1.0"
 #define LOGIN_PROGRAM   "/sbin/login"
+#define ROOT_SHELL      "/bin/bash"
 #define SHELL_FALLBACK  "/bin/sh"
+#define ROOT_LOGIN_USER "root"
+#define ROOT_LOGIN_PASSWORD "password"
 #define MAX_USERNAME    64
 #define MAX_HOSTNAME    256
+#define MAX_PASSWORD    512
 #define ISSUE_FILE      "/etc/issue"
 /* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
 #define WRITE_EAGAIN_DELAY_US   1000
@@ -132,8 +136,11 @@ static int read_line(char *buf, int maxlen)
         }
         if (n == 0)
             break;
-        if (c == '\n' || c == '\r')
+        if (c == '\n' || c == '\r') {
+            if (i == 0)
+                continue;
             break;
+        }
         /* Backspace / DEL — erase last character if terminal doesn't */
         if (c == '\b' || c == 127) {
             if (i > 0)
@@ -147,6 +154,32 @@ static int read_line(char *buf, int maxlen)
     }
     buf[i] = '\0';
     return i;
+}
+
+static void secure_zero(void *ptr, size_t len)
+{
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+    while (len--) *p++ = 0;
+}
+
+static int read_password_line(char *buf, int maxlen)
+{
+    struct termios old, noecho;
+    int have_termios = (tcgetattr(STDIN_FILENO, &old) == 0);
+
+    if (have_termios) {
+        noecho = old;
+        noecho.c_lflag &= ~(tcflag_t)(ECHO | ECHOE | ECHOK | ECHONL);
+        tcsetattr(STDIN_FILENO, TCSANOW, &noecho);
+    }
+
+    int len = read_line(buf, maxlen);
+
+    if (have_termios) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &old);
+    }
+    write_str("\r\n");
+    return len;
 }
 
 /* -------------------------------------------------------------------------
@@ -176,6 +209,7 @@ int main(int argc, char *argv[])
     char hostname[MAX_HOSTNAME];
     char username[MAX_USERNAME];
     char prompt[MAX_HOSTNAME + 32];
+    int show_banner = 1;
     const char *ttydev = (argc > 1) ? argv[1] : NULL;
     int tty_fd = -1;
 
@@ -200,7 +234,7 @@ int main(int argc, char *argv[])
                 write_str(err);
                 write_str("\r\n");
                 close(tty_fd);
-            } else if (ioctl(tty_fd, TIOCSCTTY, 0) < 0) {
+            } else if (ioctl(tty_fd, TIOCSCTTY, 1) < 0) {
                 const char *err = strerror(errno);
                 write_str("matey: cannot set controlling tty ");
                 write_str(ttydev);
@@ -236,8 +270,11 @@ int main(int argc, char *argv[])
      * On exec failure we loop so the console remains usable.
      * -------------------------------------------------------------------- */
     for (;;) {
-        write_str(BANNER);
-        print_issue();
+        if (show_banner) {
+            write_str(BANNER);
+            print_issue();
+            show_banner = 0;
+        }
         write_str(prompt);
 
         int len;
@@ -261,11 +298,44 @@ int main(int argc, char *argv[])
         if (len == 0)
             continue;
 
+        if (strcmp(name, ROOT_LOGIN_USER) == 0) {
+            char password[MAX_PASSWORD];
+
+            for (;;) {
+                write_str("Password: ");
+                if (read_password_line(password, sizeof(password)) > 0 &&
+                    strcmp(password, ROOT_LOGIN_PASSWORD) == 0) {
+                    break;
+                }
+
+                secure_zero(password, sizeof(password));
+                write_str("Login incorrect.\r\n");
+                sleep(1);
+            }
+            secure_zero(password, sizeof(password));
+
+            restore_terminal();
+            setenv("HOME", "/root", 1);
+            setenv("SHELL", ROOT_SHELL, 1);
+            setenv("USER", ROOT_LOGIN_USER, 1);
+            setenv("LOGNAME", ROOT_LOGIN_USER, 1);
+            setenv("PATH", "/bin:/sbin:/usr/bin:/usr/sbin", 1);
+            if (chdir("/root") != 0)
+                chdir("/");
+
+            execl(ROOT_SHELL, ROOT_SHELL, (char *)NULL);
+            execl(SHELL_FALLBACK, SHELL_FALLBACK, (char *)NULL);
+            write_str("matey: exec shell failed\r\n");
+            sleep(1);
+            setup_terminal();
+            continue;
+        }
+
         /* Restore terminal before handing over to login / shell. */
         restore_terminal();
 
         /* Exec the login program, passing the username. */
-        execl(LOGIN_PROGRAM, "login", "-p", "--", name, (char *)NULL);
+        execl(LOGIN_PROGRAM, "login", name, (char *)NULL);
 
         /* login exec failed — try a shell as last resort. */
         write_str("matey: exec " LOGIN_PROGRAM " failed: ");

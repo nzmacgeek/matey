@@ -6,9 +6,21 @@
   "depends": [],
   "recommends": [],
   "conflicts": [],
-  "provides": ["getty"],
+  "provides": [],
   "maintainer": "BlueyOS Maintainers <maintainers@blueyos.example>",
   "homepage": "https://github.com/nzmacgeek/matey",
-  "files": [],
-  "scripts": {}
+  "files": [
+    {"path": "/sbin/matey", "hash": "3ad0a0138af551bf9390b21b68fb1ae26824babca2af1b20e7c08d740fedf0fe", "size": 58476, "mode": "0755", "type": "file"},
+    {"path": "/sbin/.gitkeep", "hash": "06664604910d8b148c49d2dc7fa48a80568b7a4ee736a6a1db7deee83ec91888", "size": 146, "mode": "0644", "type": "file"},
+    {"path": "/etc/claw/targets.d/claw-multiuser.target.yml", "hash": "8e3b5c399451c3f0a664e8f2ce38950838937d76d6d9a730aadb576792e7d0b4", "size": 343, "mode": "0644", "type": "file"},
+    {"path": "/etc/claw/services.d/matey@tty3.yml", "hash": "13535c50ac9332dacf8af63fe1390cbc7e2a8a54a07aaeafc7520197fdd3a53f", "size": 278, "mode": "0644", "type": "file"},
+    {"path": "/etc/claw/services.d/matey@tty1.yml", "hash": "779d0a91ae2582d8f45856e16f6130beadcc4bf0f7d03d1ed03e4f0f69fa9505", "size": 278, "mode": "0644", "type": "file"},
+    {"path": "/etc/claw/services.d/matey@tty2.yml", "hash": "5aefcddbfa17157238d0bed581eff3654748dec830b615da9b4ba3865df85a35", "size": 278, "mode": "0644", "type": "file"}
+  ],
+  "scripts": {
+    "preinst": "#!/bin/bash\n# Pre-installation script for matey\n# Called before files are placed.\nset -e\n\n# Nothing to do before placement — matey is a standalone static binary.\nexit 0\n",
+    "postinst": "#!/bin/bash\n# Post-installation script for matey\n# Called after files are placed.\nset -e\n\necho \"matey installed — Bandit's Login Doorbell is ready.\"\necho \"Claw service units are in /etc/claw/services.d/ and /etc/claw/targets.d/.\"\necho \"matey will start on /dev/tty1, /dev/tty2, and /dev/tty3 at claw-multiuser.target.\"\n\nexit 0\n",
+    "prerm": "#!/bin/bash\n# Pre-removal script for matey\n# Called before files are removed.\nset -e\n\n# Stop all matey getty instances if claw is running.\nif command -v clawctl >/dev/null 2>&1; then\n    clawctl stop matey@tty1 2>/dev/null || true\n    clawctl stop matey@tty2 2>/dev/null || true\n    clawctl stop matey@tty3 2>/dev/null || true\nfi\n\nexit 0\n",
+    "postrm": "#!/bin/bash\n# Post-removal script for matey\n# Called after files are removed.\nset -e\n\necho \"matey removed — Bandit has left the building.\"\nexit 0\n"
+  }
 }
