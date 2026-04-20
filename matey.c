@@ -46,7 +46,6 @@
 #define LOG_SOCKET_PATH "/run/log/yap.inbox"
 #define LOG_FILE_PATH   "/var/log/system.log"
 #define LOG_READY_PATH  "/run/log/yap.ready"
-#define LOG_LOCK_PATH   "/run/log/yap.system.lock"
 /* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
 #define WRITE_EAGAIN_DELAY_US   1000
 
@@ -87,16 +86,21 @@ static int write_log_payload(int fd, const char *payload, size_t len)
     return 0;
 }
 
-static int acquire_log_lock(void)
+static int lock_log_file_fd(int fd)
 {
-    for (;;) {
-        int fd = open(LOG_LOCK_PATH, O_WRONLY | O_CREAT | O_EXCL, 0600);
-        if (fd >= 0)
-            return fd;
-        if (errno != EEXIST)
-            return -1;
-        usleep(1000);
+    struct flock lock;
+
+    memset(&lock, 0, sizeof(lock));
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+
+    while (fcntl(fd, F_SETLKW, &lock) < 0) {
+        if (errno == EINTR)
+            continue;
+        return -1;
     }
+
+    return 0;
 }
 
 static const char *severity_name(int severity)
@@ -161,22 +165,17 @@ static void write_log_file_payload(int severity, const char *message)
     if (fd < 0)
         return;
 
-    int lock_fd = acquire_log_lock();
-    if (lock_fd < 0) {
+    if (lock_log_file_fd(fd) < 0) {
         close(fd);
         return;
     }
 
     if (lseek(fd, 0, SEEK_END) < 0) {
-        close(lock_fd);
-        unlink(LOG_LOCK_PATH);
         close(fd);
         return;
     }
 
     (void)write_log_payload(fd, payload, (size_t)len);
-    close(lock_fd);
-    unlink(LOG_LOCK_PATH);
     close(fd);
 }
 
@@ -593,6 +592,7 @@ int main(int argc, char *argv[])
 
                 secure_zero(password, sizeof(password));
                 write_str("Login incorrect.\r\n");
+                sleep(1);
             }
             secure_zero(password, sizeof(password));
 
@@ -634,6 +634,7 @@ int main(int argc, char *argv[])
         write_str(strerror(errno));
         write_str("\r\n");
         log_error("exec %s failed: %s", SHELL_FALLBACK, strerror(errno));
+        sleep(1);
         setup_terminal();
     }
 
