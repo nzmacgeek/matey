@@ -167,6 +167,13 @@ static void write_log_file_payload(int severity, const char *message)
         return;
     }
 
+    if (lseek(fd, 0, SEEK_END) < 0) {
+        close(lock_fd);
+        unlink(LOG_LOCK_PATH);
+        close(fd);
+        return;
+    }
+
     (void)write_log_payload(fd, payload, (size_t)len);
     close(lock_fd);
     unlink(LOG_LOCK_PATH);
