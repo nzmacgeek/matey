@@ -30,6 +30,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MATEY_VERSION   "0.1.0"
@@ -44,21 +45,28 @@
 #define ISSUE_FILE      "/etc/issue"
 #define LOG_SOCKET_PATH "/run/log/yap.inbox"
 #define LOG_FILE_PATH   "/var/log/system.log"
+#define LOG_READY_PATH  "/run/log/yap.ready"
+#define LOG_LOCK_PATH   "/run/log/yap.system.lock"
 /* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
 #define WRITE_EAGAIN_DELAY_US   1000
 
 static int g_verbose = 0;
+static const char *g_log_file_name = "matey.log";
 
 static int open_log_socket(void)
 {
-    if (access(LOG_SOCKET_PATH, F_OK) != 0)
+    struct stat st;
+    char path[256];
+
+    if (stat(LOG_SOCKET_PATH, &st) != 0 || !S_ISDIR(st.st_mode))
         return -1;
 
-    int fd = open(LOG_SOCKET_PATH, O_WRONLY | O_APPEND);
-    if (fd < 0)
+    if (snprintf(path, sizeof(path), "%s/%s", LOG_SOCKET_PATH, g_log_file_name) >= (int)sizeof(path)) {
+        errno = ENAMETOOLONG;
         return -1;
+    }
 
-    return fd;
+    return open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
 }
 
 static int write_log_payload(int fd, const char *payload, size_t len)
@@ -79,19 +87,89 @@ static int write_log_payload(int fd, const char *payload, size_t len)
     return 0;
 }
 
-static void write_log_file_payload(const char *payload, size_t len)
+static int acquire_log_lock(void)
 {
-    int fd;
-    struct stat st;
+    for (;;) {
+        int fd = open(LOG_LOCK_PATH, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0)
+            return fd;
+        if (errno != EEXIST)
+            return -1;
+        usleep(1000);
+    }
+}
 
-    if (stat(LOG_FILE_PATH, &st) != 0 || st.st_size == 0)
+static const char *severity_name(int severity)
+{
+    switch (severity) {
+    case 7:
+        return "debug";
+    case 6:
+        return "info";
+    case 5:
+        return "notice";
+    case 4:
+        return "warning";
+    case 3:
+        return "err";
+    case 2:
+        return "crit";
+    default:
+        return "info";
+    }
+}
+
+static void write_log_file_payload(int severity, const char *message)
+{
+    char payload[896];
+    char timestamp[32];
+    char hostname[MAX_HOSTNAME];
+    time_t now;
+    struct tm *tm_info;
+    int fd;
+    int len;
+
+    if (access(LOG_READY_PATH, F_OK) != 0 || access(LOG_FILE_PATH, F_OK) != 0)
         return;
+
+    now = time(NULL);
+    tm_info = localtime(&now);
+    if (!tm_info)
+        return;
+
+    if (gethostname(hostname, sizeof(hostname)) != 0) {
+        strcpy(hostname, "blueyos");
+    } else {
+        hostname[sizeof(hostname) - 1] = '\0';
+    }
+
+    strftime(timestamp, sizeof(timestamp), "%b %e %H:%M:%S", tm_info);
+    len = snprintf(payload,
+                   sizeof(payload),
+                   "%s %s matey[%d]: <daemon.%s> %s\n",
+                   timestamp,
+                   hostname,
+                   getpid(),
+                   severity_name(severity),
+                   message);
+    if (len <= 0)
+        return;
+    if ((size_t)len >= sizeof(payload))
+        len = (int)sizeof(payload) - 1;
 
     fd = open(LOG_FILE_PATH, O_WRONLY | O_APPEND);
     if (fd < 0)
         return;
 
-    (void)write_log_payload(fd, payload, len);
+    int lock_fd = acquire_log_lock();
+    if (lock_fd < 0) {
+        close(fd);
+        return;
+    }
+
+    (void)write_log_payload(fd, payload, (size_t)len);
+    close(lock_fd);
+    unlink(LOG_LOCK_PATH);
     close(fd);
 }
 
@@ -121,7 +199,7 @@ static void send_log_message(int severity, const char *fmt, ...)
         close(fd);
     }
 
-    write_log_file_payload(payload, (size_t)len);
+    write_log_file_payload(severity, message);
 }
 
 static void log_notice(const char *fmt, ...)
