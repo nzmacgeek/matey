@@ -25,9 +25,12 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #define MATEY_VERSION   "0.1.0"
@@ -40,8 +43,190 @@
 #define MAX_HOSTNAME    256
 #define MAX_PASSWORD    512
 #define ISSUE_FILE      "/etc/issue"
+#define LOG_SOCKET_PATH "/dev/log"
+#define LOG_CONNECT_RETRY_ATTEMPTS 20
+#define LOG_CONNECT_RETRY_DELAY_US 10000
 /* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
 #define WRITE_EAGAIN_DELAY_US   1000
+
+static int g_log_fd = -1;
+static int g_verbose = 0;
+
+static void close_log_socket(void)
+{
+    if (g_log_fd >= 0) {
+        close(g_log_fd);
+        g_log_fd = -1;
+    }
+}
+
+static int open_log_socket(void)
+{
+    struct sockaddr_un addr;
+    int fd;
+    int flags;
+
+    if (g_log_fd >= 0)
+        return 0;
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0)
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", LOG_SOCKET_PATH);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    g_log_fd = fd;
+    return 0;
+}
+
+static int write_log_payload(const char *payload, size_t len)
+{
+    int attempt;
+    size_t offset = 0;
+
+    for (attempt = 0; attempt < LOG_CONNECT_RETRY_ATTEMPTS; attempt++) {
+        ssize_t written = write(g_log_fd, payload + offset, len - offset);
+        if (written > 0) {
+            offset += (size_t)written;
+            if (offset >= len)
+                return 0;
+            usleep(LOG_CONNECT_RETRY_DELAY_US);
+            continue;
+        }
+        if (written == 0)
+            return 0;
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS)
+            return -1;
+        usleep(LOG_CONNECT_RETRY_DELAY_US);
+    }
+
+    return -1;
+}
+
+static void send_log_message(int severity, const char *fmt, ...)
+{
+    char message[512];
+    char payload[768];
+    int pri;
+    int len;
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+
+    pri = (3 << 3) | severity; /* LOG_DAEMON */
+    len = snprintf(payload, sizeof(payload), "<%d>matey[%d]: %s\n", pri, getpid(), message);
+    if (len <= 0)
+        return;
+    if ((size_t)len >= sizeof(payload))
+        len = (int)sizeof(payload) - 1;
+
+    if (open_log_socket() != 0)
+        return;
+
+    if (write_log_payload(payload, (size_t)len) == 0)
+        return;
+
+    close_log_socket();
+    if (open_log_socket() == 0)
+        (void)write_log_payload(payload, (size_t)len);
+}
+
+static void log_notice(const char *fmt, ...)
+{
+    char message[512];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+
+    send_log_message(5, "%s", message);
+}
+
+static void log_info(const char *fmt, ...)
+{
+    char message[512];
+    va_list ap;
+
+    if (g_verbose < 1)
+        return;
+
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+
+    send_log_message(6, "%s", message);
+}
+
+static void log_debug(const char *fmt, ...)
+{
+    char message[512];
+    va_list ap;
+
+    if (g_verbose < 2)
+        return;
+
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+
+    send_log_message(7, "%s", message);
+}
+
+static void log_error(const char *fmt, ...)
+{
+    char message[512];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+
+    send_log_message(3, "%s", message);
+}
+
+static void print_usage(const char *progname)
+{
+    printf(
+        "Usage: %s [-v] [tty-device]\n"
+        "  -v, --verbose  increase logging verbosity (repeat for debug)\n"
+        "      --version  show version information\n"
+        "  -h, --help     show this help\n",
+        progname
+    );
+}
+
+static int parse_verbosity(const char *value)
+{
+    char *end = NULL;
+    long parsed;
+
+    if (!value || !*value)
+        return 0;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || *end != '\0')
+        return 0;
+    if (parsed < 0)
+        return 0;
+    if (parsed > 2)
+        return 2;
+    return (int)parsed;
+}
 
 /* BlueyOS ASCII banner — "Where Every Boot is a New Adventure!" */
 static const char BANNER[] =
@@ -210,8 +395,35 @@ int main(int argc, char *argv[])
     char username[MAX_USERNAME];
     char prompt[MAX_HOSTNAME + 32];
     int show_banner = 1;
-    const char *ttydev = (argc > 1) ? argv[1] : NULL;
+    const char *ttydev = NULL;
     int tty_fd = -1;
+
+    g_verbose = parse_verbosity(getenv("VERBOSE"));
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            if (g_verbose < 2)
+                g_verbose++;
+            continue;
+        }
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("matey %s\n", MATEY_VERSION);
+            return 0;
+        }
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        if (argv[i][0] == '-') {
+            print_usage(argv[0]);
+            return 1;
+        }
+        if (ttydev != NULL) {
+            print_usage(argv[0]);
+            return 1;
+        }
+        ttydev = argv[i];
+    }
 
     /* Open the TTY device if one was specified on the command line. */
     if (ttydev != NULL) {
@@ -224,6 +436,7 @@ int main(int argc, char *argv[])
             write_str(": ");
             write_str(err);
             write_str("\r\n");
+            log_error("cannot open %s: %s", ttydev, err);
         } else {
             /* Become a session leader before claiming a controlling TTY. */
             if (setsid() < 0) {
@@ -233,6 +446,7 @@ int main(int argc, char *argv[])
                 write_str(": ");
                 write_str(err);
                 write_str("\r\n");
+                log_error("setsid failed for %s: %s", ttydev, err);
                 close(tty_fd);
             } else if (ioctl(tty_fd, TIOCSCTTY, 1) < 0) {
                 const char *err = strerror(errno);
@@ -241,6 +455,7 @@ int main(int argc, char *argv[])
                 write_str(": ");
                 write_str(err);
                 write_str("\r\n");
+                log_error("cannot set controlling tty %s: %s", ttydev, err);
                 close(tty_fd);
             } else {
                 /* Make this TTY our controlling terminal and redirect stdio. */
@@ -249,6 +464,7 @@ int main(int argc, char *argv[])
                 dup2(tty_fd, STDERR_FILENO);
                 if (tty_fd > STDERR_FILENO)
                     close(tty_fd);
+                log_debug("claimed controlling tty %s", ttydev);
             }
         }
     }
@@ -264,6 +480,8 @@ int main(int argc, char *argv[])
 
     /* Build the prompt string once. */
     snprintf(prompt, sizeof(prompt), "%s login: ", hostname);
+    log_notice("starting login service on %s", ttydev ? ttydev : "console");
+    log_info("hostname=%s prompt initialised", hostname);
 
     /* -----------------------------------------------------------------------
      * Main login loop — display banner, read username, exec login.
@@ -274,6 +492,7 @@ int main(int argc, char *argv[])
             write_str(BANNER);
             print_issue();
             show_banner = 0;
+            log_debug("displayed login banner");
         }
         write_str(prompt);
 
@@ -322,15 +541,18 @@ int main(int argc, char *argv[])
             if (chdir("/root") != 0)
                 chdir("/");
 
+            log_notice("starting emergency root shell on %s", ttydev ? ttydev : "console");
             execl(ROOT_SHELL, ROOT_SHELL, (char *)NULL);
             execl(SHELL_FALLBACK, SHELL_FALLBACK, (char *)NULL);
             write_str("matey: exec shell failed\r\n");
+            log_error("exec shell failed for root console fallback");
             setup_terminal();
             continue;
         }
 
         /* Restore terminal before handing over to login / shell. */
         restore_terminal();
+        log_notice("handing console session to %s on %s", LOGIN_PROGRAM, ttydev ? ttydev : "console");
 
         /* Exec the login program, passing the username. */
         execl(LOGIN_PROGRAM, "login", name, (char *)NULL);
@@ -339,6 +561,7 @@ int main(int argc, char *argv[])
         write_str("matey: exec " LOGIN_PROGRAM " failed: ");
         write_str(strerror(errno));
         write_str("\r\nmatey: falling back to " SHELL_FALLBACK "\r\n");
+        log_error("exec %s failed: %s", LOGIN_PROGRAM, strerror(errno));
 
         execl(SHELL_FALLBACK, "sh", (char *)NULL);
 
@@ -346,6 +569,7 @@ int main(int argc, char *argv[])
         write_str("matey: exec " SHELL_FALLBACK " failed: ");
         write_str(strerror(errno));
         write_str("\r\n");
+        log_error("exec %s failed: %s", SHELL_FALLBACK, strerror(errno));
         setup_terminal();
     }
 
