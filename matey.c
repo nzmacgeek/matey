@@ -27,10 +27,9 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <termios.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 #define MATEY_VERSION   "0.1.0"
@@ -43,82 +42,64 @@
 #define MAX_HOSTNAME    256
 #define MAX_PASSWORD    512
 #define ISSUE_FILE      "/etc/issue"
-#define LOG_SOCKET_PATH "/dev/log"
-#define LOG_CONNECT_RETRY_ATTEMPTS 20
-#define LOG_CONNECT_RETRY_DELAY_US 10000
+#define LOG_SOCKET_PATH "/run/log/yap.inbox"
+#define LOG_FILE_PATH   "/var/log/system.log"
 /* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
 #define WRITE_EAGAIN_DELAY_US   1000
 
-static int g_log_fd = -1;
 static int g_verbose = 0;
-
-static void close_log_socket(void)
-{
-    if (g_log_fd >= 0) {
-        close(g_log_fd);
-        g_log_fd = -1;
-    }
-}
 
 static int open_log_socket(void)
 {
-    struct sockaddr_un addr;
-    int fd;
-    int flags;
+    if (access(LOG_SOCKET_PATH, F_OK) != 0)
+        return -1;
 
-    if (g_log_fd >= 0)
-        return 0;
-
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = open(LOG_SOCKET_PATH, O_WRONLY | O_APPEND);
     if (fd < 0)
         return -1;
 
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-    flags = fcntl(fd, F_GETFL, 0);
-    if (flags >= 0)
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    return fd;
+}
 
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", LOG_SOCKET_PATH);
+static int write_log_payload(int fd, const char *payload, size_t len)
+{
+    size_t offset = 0;
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        close(fd);
+    while (offset < len) {
+        ssize_t written = write(fd, payload + offset, len - offset);
+        if (written > 0) {
+            offset += (size_t)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR)
+            continue;
         return -1;
     }
 
-    g_log_fd = fd;
     return 0;
 }
 
-static int write_log_payload(const char *payload, size_t len)
+static void write_log_file_payload(const char *payload, size_t len)
 {
-    int attempt;
-    size_t offset = 0;
+    int fd;
+    struct stat st;
 
-    for (attempt = 0; attempt < LOG_CONNECT_RETRY_ATTEMPTS; attempt++) {
-        ssize_t written = write(g_log_fd, payload + offset, len - offset);
-        if (written > 0) {
-            offset += (size_t)written;
-            if (offset >= len)
-                return 0;
-            usleep(LOG_CONNECT_RETRY_DELAY_US);
-            continue;
-        }
-        if (written == 0)
-            return 0;
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS)
-            return -1;
-        usleep(LOG_CONNECT_RETRY_DELAY_US);
-    }
+    if (stat(LOG_FILE_PATH, &st) != 0 || st.st_size == 0)
+        return;
 
-    return -1;
+    fd = open(LOG_FILE_PATH, O_WRONLY | O_APPEND);
+    if (fd < 0)
+        return;
+
+    (void)write_log_payload(fd, payload, len);
+    close(fd);
 }
 
 static void send_log_message(int severity, const char *fmt, ...)
 {
     char message[512];
     char payload[768];
+    int fd;
     int pri;
     int len;
     va_list ap;
@@ -134,15 +115,13 @@ static void send_log_message(int severity, const char *fmt, ...)
     if ((size_t)len >= sizeof(payload))
         len = (int)sizeof(payload) - 1;
 
-    if (open_log_socket() != 0)
-        return;
+    fd = open_log_socket();
+    if (fd >= 0) {
+        (void)write_log_payload(fd, payload, (size_t)len);
+        close(fd);
+    }
 
-    if (write_log_payload(payload, (size_t)len) == 0)
-        return;
-
-    close_log_socket();
-    if (open_log_socket() == 0)
-        (void)write_log_payload(payload, (size_t)len);
+    write_log_file_payload(payload, (size_t)len);
 }
 
 static void log_notice(const char *fmt, ...)
