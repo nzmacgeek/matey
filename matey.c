@@ -377,6 +377,8 @@ static int read_line(char *buf, int maxlen)
     while (i < maxlen - 1) {
         unsigned char c;
         ssize_t n = read(STDIN_FILENO, &c, 1);
+        log_notice("read_line: read() n=%d c=0x%02x '%c'",
+                   (int)n, (unsigned int)c, (c >= 0x20 && c < 0x7f) ? (char)c : '.');
         if (n < 0) {
             if (errno == EINTR)
                 continue;
@@ -401,6 +403,7 @@ static int read_line(char *buf, int maxlen)
         buf[i++] = (char)c;
     }
     buf[i] = '\0';
+    log_notice("read_line: result len=%d val='%s'", i, buf);
     return i;
 }
 
