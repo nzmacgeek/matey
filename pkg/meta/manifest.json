@@ -10,7 +10,7 @@
   "maintainer": "BlueyOS Maintainers <maintainers@blueyos.example>",
   "homepage": "https://github.com/nzmacgeek/matey",
   "files": [
-    {"path": "/sbin/matey", "hash": "898ef500785482d35caa69cbc985c702e8d324e505f6ec13b94655d63c220bde", "size": 58444, "mode": "0755", "type": "file"},
+    {"path": "/sbin/matey", "hash": "5369db186f1b06e43e809af4c7e070757b8feda5e0f15c90b96a94bf343d4340", "size": 79636, "mode": "0755", "type": "file"},
     {"path": "/sbin/.gitkeep", "hash": "06664604910d8b148c49d2dc7fa48a80568b7a4ee736a6a1db7deee83ec91888", "size": 146, "mode": "0644", "type": "file"},
     {"path": "/etc/claw/targets.d/claw-multiuser.target.yml", "hash": "8e3b5c399451c3f0a664e8f2ce38950838937d76d6d9a730aadb576792e7d0b4", "size": 343, "mode": "0644", "type": "file"},
     {"path": "/etc/claw/services.d/matey@tty3.yml", "hash": "13535c50ac9332dacf8af63fe1390cbc7e2a8a54a07aaeafc7520197fdd3a53f", "size": 278, "mode": "0644", "type": "file"},

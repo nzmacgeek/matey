@@ -4,5 +4,5 @@
 name: claw-multiuser.target
 description: Multi-User System — console login active
 requires: claw-basic.target
-wants: matey@tty1 matey@tty2 matey@tty3
+wants: matey@tty1 matey@tty2 matey@tty3 bash-watch
 after: claw-basic.target
