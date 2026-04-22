@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 #define MATEY_VERSION   "0.1.0"
-#define LOGIN_PROGRAM   "/sbin/login"
+#define LOGIN_PROGRAM   "/usr/bin/login"
 #define ROOT_SHELL      "/bin/bash"
 #define SHELL_FALLBACK  "/bin/sh"
 #define ROOT_LOGIN_USER "root"
