@@ -671,7 +671,8 @@ int main(int argc, char *argv[])
             setenv("LOGNAME", ROOT_LOGIN_USER, 1);
             setenv("TERM", "linux", 1);
             setenv("PATH", "/bin:/sbin:/usr/bin:/usr/sbin", 1);
-            dump_env_to_tty();
+            if (g_verbose >= 2)
+                dump_env_to_tty();
 
             if (chdir("/root") != 0) {
                 MATEY_DBG("chdir /root FAILED (%s) — using /", strerror(errno));
@@ -695,14 +696,22 @@ int main(int argc, char *argv[])
             }
 
             if (shell_pid == 0) {
-                /* Child: reset signals, new process group, hand terminal over. */
+                /* Child: new process group first, then claim fg TTY while
+                 * SIGTTOU is still SIG_IGN (inherited from parent), then
+                 * reset signals to SIG_DFL before exec. This avoids the race
+                 * where bash's initialize_job_control() calls tcgetpgrp()
+                 * before the parent's TIOCSPGRP and stops itself on SIGTTIN. */
+                setpgid(0, 0);
+                {
+                    pid_t child_pgid = getpgrp();
+                    ioctl(STDIN_FILENO, TIOCSPGRP, &child_pgid);
+                }
                 signal(SIGTTOU, SIG_DFL);
                 signal(SIGTTIN, SIG_DFL);
                 signal(SIGINT,  SIG_DFL);
                 signal(SIGQUIT, SIG_DFL);
                 signal(SIGHUP,  SIG_DFL);
                 signal(SIGPIPE, SIG_DFL);
-                setpgid(0, 0);
                 MATEY_DBG("child: execl(\"%s\", \"-bash\", NULL)", ROOT_SHELL);
                 execl(ROOT_SHELL, "-bash", (char *)NULL);
                 execl(SHELL_FALLBACK, "-sh", (char *)NULL);
@@ -710,16 +719,8 @@ int main(int argc, char *argv[])
                 _exit(1);
             }
 
-            /* Parent: race-proof child pgrp, then hand foreground to child. */
+            /* Parent: race-proof child pgrp. */
             setpgid(shell_pid, shell_pid);
-            {
-                pid_t child_pgid = shell_pid;
-                if (ioctl(STDIN_FILENO, TIOCSPGRP, &child_pgid) < 0)
-                    MATEY_DBG("TIOCSPGRP (to child %d) failed: %s",
-                              (int)shell_pid, strerror(errno));
-                else
-                    MATEY_DBG("TIOCSPGRP: handed fg to shell pgrp=%d", (int)shell_pid);
-            }
 
             /* Wait for the shell to exit (restart on EINTR). */
             {
