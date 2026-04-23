@@ -34,7 +34,8 @@
 #include <unistd.h>
 
 #define MATEY_VERSION   "0.1.0"
-#define LOGIN_PROGRAM   "/sbin/login"
+#define LOGIN_PROGRAM   "/usr/bin/login"
+#define LOGIN_PROGRAM_FALLBACK "/sbin/login"
 #define ROOT_SHELL      "/bin/bash"
 #define SHELL_FALLBACK  "/bin/sh"
 #define ROOT_LOGIN_USER "root"
@@ -48,6 +49,24 @@
 #define LOG_READY_PATH  "/run/log/yap.ready"
 /* Backoff delay (µs) when stdout signals EAGAIN — avoids a busy-spin. */
 #define WRITE_EAGAIN_DELAY_US   1000
+
+/*
+ * MATEY_DBG — always writes directly to the active TTY so every step is
+ * visible on-screen, independent of the log daemon.  Also emits a structured
+ * log entry when verbosity is sufficient (-v -v).
+ *
+ * NOTE: write_str() is defined later in this file; the macro is only
+ *       expanded inside main() and other functions that follow write_str's
+ *       definition, so no forward declaration is required.
+ */
+#define MATEY_DBG(fmt, ...) do { \
+    char _m_dbg_[512]; \
+    snprintf(_m_dbg_, sizeof(_m_dbg_), \
+             "[matey dbg %s:%d] " fmt "\r\n", \
+             __FILE__, __LINE__, ##__VA_ARGS__); \
+    write_str(_m_dbg_); \
+    log_debug("[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__); \
+} while (0)
 
 static int g_verbose = 0;
 static const char *g_log_file_name = "matey.log";
@@ -377,8 +396,7 @@ static int read_line(char *buf, int maxlen)
     while (i < maxlen - 1) {
         unsigned char c;
         ssize_t n = read(STDIN_FILENO, &c, 1);
-        log_notice("read_line: read() n=%d c=0x%02x '%c'",
-                   (int)n, (unsigned int)c, (c >= 0x20 && c < 0x7f) ? (char)c : '.');
+        log_debug("read_line: read() n=%d i=%d", (int)n, i);
         if (n < 0) {
             if (errno == EINTR)
                 continue;
@@ -403,7 +421,7 @@ static int read_line(char *buf, int maxlen)
         buf[i++] = (char)c;
     }
     buf[i] = '\0';
-    log_notice("read_line: result len=%d val='%s'", i, buf);
+    log_debug("read_line: result len=%d", i);
     return i;
 }
 
@@ -449,6 +467,24 @@ static void print_issue(void)
         (void)written;
     }
     close(fd);
+}
+
+/* -------------------------------------------------------------------------
+ * Debug helpers
+ * ---------------------------------------------------------------------- */
+
+/* Dump the current process environment to the TTY — called just before exec. */
+static void dump_env_to_tty(void)
+{
+    extern char **environ;
+    char **ep;
+
+    write_str("[matey dbg] environment before exec:\r\n");
+    for (ep = environ; ep && *ep; ep++) {
+        write_str("  ");
+        write_str(*ep);
+        write_str("\r\n");
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -530,6 +566,8 @@ int main(int argc, char *argv[])
                 dup2(tty_fd, STDERR_FILENO);
                 if (tty_fd > STDERR_FILENO)
                     close(tty_fd);
+                MATEY_DBG("TTY claimed: %s (pid=%d) — debug output now active",
+                          ttydev, (int)getpid());
                 log_debug("claimed controlling tty %s", ttydev);
             }
         }
@@ -585,14 +623,25 @@ int main(int argc, char *argv[])
 
         if (strcmp(name, ROOT_LOGIN_USER) == 0) {
             char password[MAX_PASSWORD];
+            int pwlen;
+            int pwmatched;
+
+            MATEY_DBG("root login attempt on %s (pid=%d)",
+                      ttydev ? ttydev : "console", (int)getpid());
 
             for (;;) {
                 write_str("Password: ");
-                if (read_password_line(password, sizeof(password)) > 0 &&
-                    strcmp(password, ROOT_LOGIN_PASSWORD) == 0) {
+                MATEY_DBG("waiting for password input");
+                pwlen = read_password_line(password, sizeof(password));
+                MATEY_DBG("password read: %d chars", pwlen);
+                pwmatched = (pwlen > 0 &&
+                             strcmp(password, ROOT_LOGIN_PASSWORD) == 0);
+                if (pwmatched) {
+                    MATEY_DBG("password MATCHED — proceeding to shell");
                     break;
                 }
-
+                MATEY_DBG("password MISMATCH (received len=%d, expected len=%d)",
+                          pwlen, (int)strlen(ROOT_LOGIN_PASSWORD));
                 secure_zero(password, sizeof(password));
                 write_str("Login incorrect.\r\n");
                 sleep(1);
@@ -600,17 +649,44 @@ int main(int argc, char *argv[])
             secure_zero(password, sizeof(password));
 
             restore_terminal();
+            MATEY_DBG("terminal restored; setting environment");
             setenv("HOME", "/root", 1);
             setenv("SHELL", ROOT_SHELL, 1);
             setenv("USER", ROOT_LOGIN_USER, 1);
             setenv("LOGNAME", ROOT_LOGIN_USER, 1);
+            setenv("TERM", "linux", 1);
             setenv("PATH", "/bin:/sbin:/usr/bin:/usr/sbin", 1);
-            if (chdir("/root") != 0)
-                chdir("/");
+            dump_env_to_tty();
 
-            log_notice("starting emergency root shell on %s", ttydev ? ttydev : "console");
-            execl(ROOT_SHELL, ROOT_SHELL, (char *)NULL);
-            execl(SHELL_FALLBACK, SHELL_FALLBACK, (char *)NULL);
+            if (chdir("/root") != 0) {
+                MATEY_DBG("chdir /root FAILED (%s) — using /", strerror(errno));
+                chdir("/");
+            } else {
+                MATEY_DBG("chdir /root: ok");
+            }
+
+            log_notice("starting root shell on %s", ttydev ? ttydev : "console");
+            /* Set ourselves as the foreground process group so bash's
+             * job control initialization finds the correct fg_pgid and
+             * doesn't loop waiting to be moved to the foreground. */
+            {
+                pid_t pgrp = getpid();  /* after setsid(), pgid == pid */
+                if (ioctl(STDIN_FILENO, TIOCSPGRP, &pgrp) < 0)
+                    MATEY_DBG("TIOCSPGRP failed: %s", strerror(errno));
+                else
+                    MATEY_DBG("TIOCSPGRP: set fg_pgid=%d", (int)pgrp);
+            }
+            MATEY_DBG("execl(\"%s\", \"-bash\", NULL) — launching login shell",
+                      ROOT_SHELL);
+            execl(ROOT_SHELL, "-bash", (char *)NULL);
+            MATEY_DBG("execl %s FAILED: %s — trying fallback %s",
+                      ROOT_SHELL, strerror(errno), SHELL_FALLBACK);
+
+            MATEY_DBG("execl(\"%s\", \"-sh\", NULL)", SHELL_FALLBACK);
+            execl(SHELL_FALLBACK, "-sh", (char *)NULL);
+            MATEY_DBG("execl %s FAILED: %s — no shell available",
+                      SHELL_FALLBACK, strerror(errno));
+
             write_str("matey: exec shell failed\r\n");
             log_error("exec shell failed for root console fallback");
             setup_terminal();
@@ -619,16 +695,28 @@ int main(int argc, char *argv[])
 
         /* Restore terminal before handing over to login / shell. */
         restore_terminal();
-        log_notice("handing console session to %s on %s", LOGIN_PROGRAM, ttydev ? ttydev : "console");
+        log_notice("handing console session to %s (fallback %s) on %s",
+                   LOGIN_PROGRAM, LOGIN_PROGRAM_FALLBACK,
+                   ttydev ? ttydev : "console");
 
         /* Exec the login program, passing the username. */
         execl(LOGIN_PROGRAM, "login", name, (char *)NULL);
+        int login_errno = errno;
+        log_error("exec %s failed: %s; trying %s",
+                  LOGIN_PROGRAM, strerror(login_errno), LOGIN_PROGRAM_FALLBACK);
+
+        /* Primary login path failed — try legacy path before shell fallback. */
+        execl(LOGIN_PROGRAM_FALLBACK, "login", name, (char *)NULL);
+        int login_fallback_errno = errno;
 
         /* login exec failed — try a shell as last resort. */
         write_str("matey: exec " LOGIN_PROGRAM " failed: ");
-        write_str(strerror(errno));
+        write_str(strerror(login_errno));
+        write_str("\r\nmatey: exec " LOGIN_PROGRAM_FALLBACK " failed: ");
+        write_str(strerror(login_fallback_errno));
         write_str("\r\nmatey: falling back to " SHELL_FALLBACK "\r\n");
-        log_error("exec %s failed: %s", LOGIN_PROGRAM, strerror(errno));
+        log_error("exec %s failed: %s",
+                  LOGIN_PROGRAM_FALLBACK, strerror(login_fallback_errno));
 
         execl(SHELL_FALLBACK, "sh", (char *)NULL);
 
