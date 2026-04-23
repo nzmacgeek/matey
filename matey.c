@@ -23,12 +23,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -60,11 +62,13 @@
  *       definition, so no forward declaration is required.
  */
 #define MATEY_DBG(fmt, ...) do { \
-    char _m_dbg_[512]; \
-    snprintf(_m_dbg_, sizeof(_m_dbg_), \
-             "[matey dbg %s:%d] " fmt "\r\n", \
-             __FILE__, __LINE__, ##__VA_ARGS__); \
-    write_str(_m_dbg_); \
+    if (g_verbose >= 2) { \
+        char _m_dbg_[512]; \
+        snprintf(_m_dbg_, sizeof(_m_dbg_), \
+                 "[matey dbg %s:%d] " fmt "\r\n", \
+                 __FILE__, __LINE__, ##__VA_ARGS__); \
+        write_str(_m_dbg_); \
+    } \
     log_debug("[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__); \
 } while (0)
 
@@ -576,6 +580,17 @@ int main(int argc, char *argv[])
     /* Configure the terminal for login-name input. */
     setup_terminal();
 
+    /* Ignore SIGTTOU/SIGTTIN for our lifetime — we manipulate the foreground
+     * pgrp and must not be stopped when we do so from background. */
+    signal(SIGTTOU, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+
+    /* Save the canonical login termios state so we can restore it when the
+     * shell exits and we re-display the login prompt. */
+    struct termios canon_termios;
+    if (tcgetattr(STDIN_FILENO, &canon_termios) != 0)
+        memset(&canon_termios, 0, sizeof(canon_termios));
+
     /* Determine hostname for the login prompt. */
     if (gethostname(hostname, sizeof(hostname)) != 0) {
         strncpy(hostname, "blueyos", sizeof(hostname) - 1);
@@ -666,30 +681,67 @@ int main(int argc, char *argv[])
             }
 
             log_notice("starting root shell on %s", ttydev ? ttydev : "console");
-            /* Set ourselves as the foreground process group so bash's
-             * job control initialization finds the correct fg_pgid and
-             * doesn't loop waiting to be moved to the foreground. */
-            {
-                pid_t pgrp = getpid();  /* after setsid(), pgid == pid */
-                if (ioctl(STDIN_FILENO, TIOCSPGRP, &pgrp) < 0)
-                    MATEY_DBG("TIOCSPGRP failed: %s", strerror(errno));
-                else
-                    MATEY_DBG("TIOCSPGRP: set fg_pgid=%d", (int)pgrp);
+
+            MATEY_DBG("fork()ing to launch shell — parent will wait and reclaim terminal");
+            pid_t shell_pid = fork();
+            if (shell_pid < 0) {
+                MATEY_DBG("fork() FAILED: %s", strerror(errno));
+                log_error("fork failed: %s", strerror(errno));
+                write_str("matey: fork failed\r\n");
+                sleep(1);
+                setup_terminal();
+                show_banner = 1;
+                continue;
             }
-            MATEY_DBG("execl(\"%s\", \"-bash\", NULL) — launching login shell",
-                      ROOT_SHELL);
-            execl(ROOT_SHELL, "-bash", (char *)NULL);
-            MATEY_DBG("execl %s FAILED: %s — trying fallback %s",
-                      ROOT_SHELL, strerror(errno), SHELL_FALLBACK);
 
-            MATEY_DBG("execl(\"%s\", \"-sh\", NULL)", SHELL_FALLBACK);
-            execl(SHELL_FALLBACK, "-sh", (char *)NULL);
-            MATEY_DBG("execl %s FAILED: %s — no shell available",
-                      SHELL_FALLBACK, strerror(errno));
+            if (shell_pid == 0) {
+                /* Child: reset signals, new process group, hand terminal over. */
+                signal(SIGTTOU, SIG_DFL);
+                signal(SIGTTIN, SIG_DFL);
+                signal(SIGINT,  SIG_DFL);
+                signal(SIGQUIT, SIG_DFL);
+                signal(SIGHUP,  SIG_DFL);
+                signal(SIGPIPE, SIG_DFL);
+                setpgid(0, 0);
+                MATEY_DBG("child: execl(\"%s\", \"-bash\", NULL)", ROOT_SHELL);
+                execl(ROOT_SHELL, "-bash", (char *)NULL);
+                execl(SHELL_FALLBACK, "-sh", (char *)NULL);
+                write_str("matey: exec shell failed in child\r\n");
+                _exit(1);
+            }
 
-            write_str("matey: exec shell failed\r\n");
-            log_error("exec shell failed for root console fallback");
-            setup_terminal();
+            /* Parent: race-proof child pgrp, then hand foreground to child. */
+            setpgid(shell_pid, shell_pid);
+            {
+                pid_t child_pgid = shell_pid;
+                if (ioctl(STDIN_FILENO, TIOCSPGRP, &child_pgid) < 0)
+                    MATEY_DBG("TIOCSPGRP (to child %d) failed: %s",
+                              (int)shell_pid, strerror(errno));
+                else
+                    MATEY_DBG("TIOCSPGRP: handed fg to shell pgrp=%d", (int)shell_pid);
+            }
+
+            /* Wait for the shell to exit (restart on EINTR). */
+            {
+                int status = 0;
+                pid_t ret;
+                do { ret = waitpid(shell_pid, &status, WUNTRACED); }
+                while (ret < 0 && errno == EINTR);
+                MATEY_DBG("shell exited: waitpid=%d status=%d", (int)ret, status);
+            }
+
+            /* Reclaim the foreground process group. */
+            {
+                pid_t my_pgid = getpgrp();
+                if (ioctl(STDIN_FILENO, TIOCSPGRP, &my_pgid) < 0)
+                    MATEY_DBG("TIOCSPGRP (reclaim) failed: %s", strerror(errno));
+                else
+                    MATEY_DBG("TIOCSPGRP: reclaimed fg for matey pgrp=%d", (int)my_pgid);
+            }
+
+            /* Restore the canonical termios and show the login prompt again. */
+            tcsetattr(STDIN_FILENO, TCSANOW, &canon_termios);
+            show_banner = 1;
             continue;
         }
 

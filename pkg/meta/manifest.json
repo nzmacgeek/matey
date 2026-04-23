@@ -10,12 +10,12 @@
   "maintainer": "BlueyOS Maintainers <maintainers@blueyos.example>",
   "homepage": "https://github.com/nzmacgeek/matey",
   "files": [
-    {"path": "/sbin/matey", "hash": "5369db186f1b06e43e809af4c7e070757b8feda5e0f15c90b96a94bf343d4340", "size": 79636, "mode": "0755", "type": "file"},
+    {"path": "/sbin/matey", "hash": "94732952d172fb0f9cf499eb825c17d2e94e9b2eadadb036bb65b670a9180824", "size": 87828, "mode": "0755", "type": "file"},
     {"path": "/sbin/.gitkeep", "hash": "06664604910d8b148c49d2dc7fa48a80568b7a4ee736a6a1db7deee83ec91888", "size": 146, "mode": "0644", "type": "file"},
-    {"path": "/etc/claw/targets.d/claw-multiuser.target.yml", "hash": "8e3b5c399451c3f0a664e8f2ce38950838937d76d6d9a730aadb576792e7d0b4", "size": 343, "mode": "0644", "type": "file"},
-    {"path": "/etc/claw/services.d/matey@tty3.yml", "hash": "13535c50ac9332dacf8af63fe1390cbc7e2a8a54a07aaeafc7520197fdd3a53f", "size": 278, "mode": "0644", "type": "file"},
-    {"path": "/etc/claw/services.d/matey@tty1.yml", "hash": "779d0a91ae2582d8f45856e16f6130beadcc4bf0f7d03d1ed03e4f0f69fa9505", "size": 278, "mode": "0644", "type": "file"},
-    {"path": "/etc/claw/services.d/matey@tty2.yml", "hash": "5aefcddbfa17157238d0bed581eff3654748dec830b615da9b4ba3865df85a35", "size": 278, "mode": "0644", "type": "file"}
+    {"path": "/etc/claw/targets.d/claw-multiuser.target.yml", "hash": "6fef452722c073ef54906d64b7d8a06247c02d7fb65d36317b72488d2d7527a0", "size": 354, "mode": "0664", "type": "file"},
+    {"path": "/etc/claw/services.d/matey@tty3.yml", "hash": "761c7c4253286815bdf9f7b86694779de05e46bd9ab33f6af26cce22e24e26b9", "size": 284, "mode": "0664", "type": "file"},
+    {"path": "/etc/claw/services.d/matey@tty1.yml", "hash": "1bd21e6528f744af986a8800ac478cbd102440624f75037972ea7b441e915f07", "size": 284, "mode": "0664", "type": "file"},
+    {"path": "/etc/claw/services.d/matey@tty2.yml", "hash": "b128ee1f8dd579d149ae014b727a2c008cb5d830c9b98b39899d77766121fd24", "size": 284, "mode": "0664", "type": "file"}
   ],
   "scripts": {
     "preinst": "#!/bin/bash\n# Pre-installation script for matey\n# Called before files are placed.\nset -e\n\n# Nothing to do before placement — matey is a standalone static binary.\nexit 0\n",
