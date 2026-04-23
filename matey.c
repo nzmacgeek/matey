@@ -35,6 +35,7 @@
 
 #define MATEY_VERSION   "0.1.0"
 #define LOGIN_PROGRAM   "/usr/bin/login"
+#define LOGIN_PROGRAM_FALLBACK "/sbin/login"
 #define ROOT_SHELL      "/bin/bash"
 #define SHELL_FALLBACK  "/bin/sh"
 #define ROOT_LOGIN_USER "root"
@@ -694,16 +695,28 @@ int main(int argc, char *argv[])
 
         /* Restore terminal before handing over to login / shell. */
         restore_terminal();
-        log_notice("handing console session to %s on %s", LOGIN_PROGRAM, ttydev ? ttydev : "console");
+        log_notice("handing console session to %s (fallback %s) on %s",
+                   LOGIN_PROGRAM, LOGIN_PROGRAM_FALLBACK,
+                   ttydev ? ttydev : "console");
 
         /* Exec the login program, passing the username. */
         execl(LOGIN_PROGRAM, "login", name, (char *)NULL);
+        int login_errno = errno;
+        log_error("exec %s failed: %s; trying %s",
+                  LOGIN_PROGRAM, strerror(login_errno), LOGIN_PROGRAM_FALLBACK);
+
+        /* Primary login path failed — try legacy path before shell fallback. */
+        execl(LOGIN_PROGRAM_FALLBACK, "login", name, (char *)NULL);
+        int login_fallback_errno = errno;
 
         /* login exec failed — try a shell as last resort. */
         write_str("matey: exec " LOGIN_PROGRAM " failed: ");
-        write_str(strerror(errno));
+        write_str(strerror(login_errno));
+        write_str("\r\nmatey: exec " LOGIN_PROGRAM_FALLBACK " failed: ");
+        write_str(strerror(login_fallback_errno));
         write_str("\r\nmatey: falling back to " SHELL_FALLBACK "\r\n");
-        log_error("exec %s failed: %s", LOGIN_PROGRAM, strerror(errno));
+        log_error("exec %s failed: %s",
+                  LOGIN_PROGRAM_FALLBACK, strerror(login_fallback_errno));
 
         execl(SHELL_FALLBACK, "sh", (char *)NULL);
 
