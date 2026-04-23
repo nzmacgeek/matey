@@ -667,6 +667,16 @@ int main(int argc, char *argv[])
             }
 
             log_notice("starting root shell on %s", ttydev ? ttydev : "console");
+            /* Set ourselves as the foreground process group so bash's
+             * job control initialization finds the correct fg_pgid and
+             * doesn't loop waiting to be moved to the foreground. */
+            {
+                pid_t pgrp = getpid();  /* after setsid(), pgid == pid */
+                if (ioctl(STDIN_FILENO, TIOCSPGRP, &pgrp) < 0)
+                    MATEY_DBG("TIOCSPGRP failed: %s", strerror(errno));
+                else
+                    MATEY_DBG("TIOCSPGRP: set fg_pgid=%d", (int)pgrp);
+            }
             MATEY_DBG("execl(\"%s\", \"-bash\", NULL) — launching login shell",
                       ROOT_SHELL);
             execl(ROOT_SHELL, "-bash", (char *)NULL);
