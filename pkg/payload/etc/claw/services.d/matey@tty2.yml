@@ -3,7 +3,7 @@
 name: matey@tty2
 description: "G'day! Bandit's Login Doorbell on /dev/tty2"
 type: simple
-start_cmd: /sbin/matey -v -v /dev/tty2
+start_cmd: /sbin/matey /dev/tty2
 user: root
 restart: always
 restart_delay: 1
